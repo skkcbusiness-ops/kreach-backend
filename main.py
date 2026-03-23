@@ -525,24 +525,27 @@ async def admin_delete_reg(rid: str, _=Depends(check_admin_token)):
     supabase.table("regulations").delete().eq("id", rid).execute()
     return {"deleted": rid}
 
-# ── AI 규제 자동 업데이트 (웹 검색 포함) ──────────────────────
+# ── AI 규제 자동 업데이트 ──────────────────────────────────────
 @app.post("/admin/regulations/ai-update")
 async def admin_ai_update_regs(_=Depends(check_admin_token)):
     resp = claude.messages.create(
         model="claude-sonnet-4-20250514", max_tokens=1000,
-        system="K-REACH·화평법·화관법 규제 전문가. 최신 개정사항을 JSON 배열로만 응답.",
+        system="K-REACH 규제 전문가. JSON 배열만 반환. 코드블록 사용 금지.",
         messages=[{"role":"user","content":
-            """2024~2026년 K-REACH(화평법)·화관법 주요 개정/시행 사항을 JSON 배열로 정리:
-[{"title":"개정명","content":"핵심 내용 2~3줄","effective_date":"YYYY-MM-DD","source":"환경부 또는 법령명"}]
-반드시 JSON만 반환."""}],
-        tools=[{"type":"web_search_20250305","name":"web_search"}]
+            "K-REACH(화평법) 2024~2026 주요 개정 10건을 JSON 배열로만 반환: [{\"title\":\"개정명\",\"content\":\"핵심내용\",\"effective_date\":\"YYYY-MM-DD\",\"source\":\"출처\"}] JSON만 반환."}]
     )
-    text = "".join(b.text for b in resp.content if hasattr(b,"text"))
-    text = text.replace("```json","").replace("```","").strip()
+    text = resp.content[0].text.strip()
+    start = text.find("[")
+    end   = text.rfind("]") + 1
+    if start == -1 or end == 0:
+        raise HTTPException(500, f"JSON 없음: {text[:200]}")
+    text = text[start:end]
     try:
         regs = json.loads(text)
         count = 0
         for r in regs:
+            if not r.get("title"):
+                continue
             supabase.table("regulations").upsert({
                 "title": r.get("title",""),
                 "content": r.get("content",""),
@@ -553,7 +556,7 @@ async def admin_ai_update_regs(_=Depends(check_admin_token)):
             count += 1
         return {"updated": count, "timestamp": datetime.utcnow().isoformat()}
     except Exception as e:
-        raise HTTPException(500, f"파싱 실패: {e}")
+        raise HTTPException(500, f"파싱 실패: {e} | raw: {text[:300]}")
 
 # ── 시스템 헬스체크 ────────────────────────────────────────────
 @app.get("/admin/health")
